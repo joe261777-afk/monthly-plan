@@ -1,6 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { FormEvent, useState } from "react";
-import {
+import { FormEvent, useEffect, useState } from "react";import {
   format,
   startOfMonth,
   endOfMonth,
@@ -17,7 +16,8 @@ import { cn } from "@/lib/utils";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import heroImage from "../assets/volunteer-hero.jpg";
-
+import { onValue, push, ref, remove, set } from "firebase/database";
+import { database } from "@/lib/firebase";
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
@@ -70,8 +70,92 @@ function Index() {
   const selectedEvent = selectedDate
     ? events.find((e) => isSameDay(e.date, selectedDate))
     : null;
+  useEffect(() => {
+    const eventsRef = ref(database, "events");
+
+    const unsubscribe = onValue(eventsRef, (snapshot) => {
+      const data = snapshot.val();
+
+      if (!data) {
+        setEvents([]);
+        return;
+      }
+
+      const firebaseEvents: VolunteerEvent[] = Object.entries(data).map(
+        ([id, value]) => {
+          const event = value as {
+            title: string;
+            date: string;
+            time: string;
+            location: string;
+            description: string;
+            category: VolunteerEvent["category"];
+          };
+
+          return {
+            id,
+            title: event.title,
+            date: new Date(event.date),
+            time: event.time,
+            location: event.location,
+            description: event.description,
+            category: event.category,
+          };
+        }
+      );
+
+      firebaseEvents.sort((a, b) => a.date.getTime() - b.date.getTime());
+
+      setEvents(firebaseEvents);
+    });
+
+    return () => unsubscribe();
+  }, []);  
+
+
+const t = {
+  annualPlan: "خطة الشهر",
+  activitiesSoon: "لسه مفيش أنشطة مضافة",
+  highlightedDate: "دوس على اليوم المتعلّم عشان تشوف تفاصيل النشاط",
+
+  addEvent: "ضيف نشاط",
+  eventTitle: "اسم النشاط",
+  date: "التاريخ",
+  time: "المعاد",
+  location: "المكان",
+  category: "نوع النشاط",
+  description: "تفاصيل النشاط",
+
+  cancel: "إلغاء",
+  saveEvent: "حفظ النشاط",
+
+  noActivities: "مفيش أنشطة متضافة لسه",
+  clickPencil: "دوس على علامة القلم فوق عشان تضيف أول نشاط.",
+
+  backToAllEvents: "رجوع لكل الأنشطة",
+  delete: "مسح",
+  deleteEvent: "مسح النشاط",
+
+  adminPasswordAdd: "اكتب باسورد الأدمن عشان تضيف نشاط:",
+  adminPasswordDelete: "اكتب باسورد الأدمن عشان تمسح النشاط:",
+  incorrectPassword: "الباسورد غلط.",
+  confirmDelete: "متأكد إنك عايز تمسح النشاط ده؟",
+  deletedSuccessfully: "النشاط اتمسح بنجاح.",
+
+  titlePlaceholder: "مثال: توزيع شنط رمضان",
+  timePlaceholder: "مثال: من 10 الصبح لـ 2 الضهر",
+  locationPlaceholder: "مثال: مركز الشباب",
+  descriptionPlaceholder: "اكتب تفاصيل بسيطة عن النشاط للمنظمين والمتطوعين.",
+
+  community: "خدمة مجتمعية",
+  environment: "بيئة",
+  education: "تعليم",
+
+  footer: "اتعمل بحب بواسطة فريق المتطوعين",
+};
+
   function handleOpenAddEvent() {
-    const password = window.prompt("Enter admin password to add an event:");
+    const password = window.prompt(t.adminPasswordAdd);
 
     if (password === ADMIN_PASSWORD) {
       setShowAddEvent(true);
@@ -79,10 +163,10 @@ function Index() {
     }
 
     if (password !== null) {
-      alert("Incorrect password.");
+      alert(t.incorrectPassword);
     }
-  }  
-  function handleAddEvent(e: FormEvent<HTMLFormElement>) {
+  }
+  async function handleAddEvent(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
 
     if (!newEvent.title || !newEvent.date || !newEvent.time) {
@@ -91,31 +175,75 @@ function Index() {
     }
 
     const [year, month, day] = newEvent.date.split("-").map(Number);
+    const eventDate = new Date(year, month - 1, day);
 
-    const eventToAdd: VolunteerEvent = {
-      id: crypto.randomUUID(),
+    const eventToSave = {
       title: newEvent.title,
-      date: new Date(year, month - 1, day),
+      date: eventDate.toISOString(),
       time: newEvent.time,
       location: newEvent.location || "To be announced",
       description: newEvent.description || "Details will be added soon.",
       category: newEvent.category,
+      createdAt: new Date().toISOString(),
     };
 
-    setEvents((prev) => [...prev, eventToAdd]);
-    setCurrentMonth(eventToAdd.date);
-    setSelectedDate(eventToAdd.date);
-    setShowAddEvent(false);
+    try {
+      const newEventRef = push(ref(database, "events"));
+      await set(newEventRef, eventToSave);
 
-    setNewEvent({
-      title: "",
-      date: format(eventToAdd.date, "yyyy-MM-dd"),
-      time: "",
-      location: "",
-      description: "",
-      category: "Community",
-    });
-  }  
+      setCurrentMonth(eventDate);
+      setSelectedDate(eventDate);
+      setShowAddEvent(false);
+
+      setNewEvent({
+        title: "",
+        date: format(eventDate, "yyyy-MM-dd"),
+        time: "",
+        location: "",
+        description: "",
+        category: "Community",
+      });
+    } catch (error) {
+      console.error("Error saving event:", error);
+      alert("Event was not saved. Check Firebase rules and databaseURL.");
+    }
+  }
+
+  async function handleDeleteEvent(eventId: string) {
+    const password = window.prompt("Enter admin password to delete this event:");
+
+    if (password === null) {
+      return;
+    }
+
+    if (password !== ADMIN_PASSWORD) {
+      alert("Incorrect password.");
+      return;
+    }
+
+    const confirmDelete = window.confirm(
+      "Are you sure you want to delete this event?"
+    );
+
+    if (!confirmDelete) {
+      return;
+    }
+
+    try {
+      await remove(ref(database, `events/${eventId}`));
+
+      if (selectedEvent?.id === eventId) {
+        setSelectedDate(null);
+      }
+
+      alert("Event deleted successfully.");
+    } catch (error) {
+      console.error("Error deleting event:", error);
+      alert("Could not delete event. Please try again.");
+    }
+  }
+
+
   function handlePrevMonth() {
     setCurrentMonth((m) => subMonths(m, 1));
     setSelectedDate(null);
@@ -129,8 +257,8 @@ function Index() {
   const weekdayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
   return (
-    <div className="min-h-screen bg-background font-body">
-      {/* Hero */}
+    <div className="min-h-screen bg-background" dir="rtl">
+        {/* Hero */}
       <section className="relative overflow-hidden">
         <div className="absolute inset-0 bg-gradient-to-br from-volunteer-cream/60 via-background to-volunteer-lavender/20" />
         <div className="relative mx-auto max-w-6xl px-4 py-16 md:py-24">
@@ -178,7 +306,7 @@ function Index() {
         <div className="mb-8 text-center">
           <div className="flex items-center justify-center gap-3">
             <h2 className="font-heading text-2xl font-semibold text-foreground md:text-3xl">
-              Annual Plan
+{t.annualPlan}
             </h2>
 
           <Button
@@ -194,8 +322,8 @@ function Index() {
 
           <p className="mt-2 text-muted-foreground">
             {events.length > 0
-              ? "Click a highlighted date to see event details"
-              : "Activities will be added soon"}
+              ? t.highlightedDate
+              : t.activitiesSoon}
           </p>
         </div>
 {showAddEvent && (
@@ -204,21 +332,21 @@ function Index() {
       <form onSubmit={handleAddEvent} className="grid gap-4 md:grid-cols-2">
         <div className="md:col-span-2">
           <label className="mb-1 block text-sm font-medium text-foreground">
-            Event title
+           {t.eventTitle}
           </label>
           <input
             value={newEvent.title}
             onChange={(e) =>
               setNewEvent((prev) => ({ ...prev, title: e.target.value }))
             }
-            placeholder="Example: Winter Clothes Distribution"
+            placeholder="مثال: توزيع وجبات"
             className="w-full rounded-xl border border-volunteer-lavender/40 bg-background px-4 py-2 text-sm outline-none focus:border-volunteer-purple"
           />
         </div>
 
         <div>
           <label className="mb-1 block text-sm font-medium text-foreground">
-            Date
+            {t.date}
           </label>
           <input
             type="date"
@@ -232,7 +360,7 @@ function Index() {
 
         <div>
           <label className="mb-1 block text-sm font-medium text-foreground">
-            Time
+            {t.time}
           </label>
           <input
             value={newEvent.time}
@@ -246,7 +374,7 @@ function Index() {
 
         <div>
           <label className="mb-1 block text-sm font-medium text-foreground">
-            Location
+            {t.location}
           </label>
           <input
             value={newEvent.location}
@@ -260,7 +388,7 @@ function Index() {
 
         <div>
           <label className="mb-1 block text-sm font-medium text-foreground">
-            Category
+            {t.category}
           </label>
           <select
             value={newEvent.category}
@@ -280,14 +408,14 @@ function Index() {
 
         <div className="md:col-span-2">
           <label className="mb-1 block text-sm font-medium text-foreground">
-            Description
+            {t.description}
           </label>
           <textarea
             value={newEvent.description}
             onChange={(e) =>
               setNewEvent((prev) => ({ ...prev, description: e.target.value }))
             }
-            placeholder="Write a short description for people who will view the plan."
+            placeholder="هنعمل ايه في اليوم"
             rows={3}
             className="w-full rounded-xl border border-volunteer-lavender/40 bg-background px-4 py-2 text-sm outline-none focus:border-volunteer-purple"
           />
@@ -300,7 +428,7 @@ function Index() {
             onClick={() => setShowAddEvent(false)}
             className="rounded-full"
           >
-            Cancel
+            {t.cancel}
           </Button>
 
           <Button
@@ -308,7 +436,7 @@ function Index() {
             className="rounded-full bg-volunteer-purple text-primary-foreground hover:bg-volunteer-purple/90"
           >
             <Plus className="mr-2 h-4 w-4" />
-            Add Event
+            {t.addEvent}
           </Button>
         </div>
       </form>
@@ -427,29 +555,57 @@ function Index() {
             className="text-muted-foreground hover:text-foreground"
           >
             <ChevronLeft className="mr-1 h-4 w-4" />
-            Back to all events
+{t.backToAllEvents}
           </Button>
         </div>
 
-        <EventDetailCard event={selectedEvent} />
+<div className="space-y-3">
+  <div className="flex justify-end">
+    <Button
+      type="button"
+      variant="destructive"
+      size="sm"
+      onClick={() => handleDeleteEvent(selectedEvent.id)}
+      className="rounded-full px-4"
+    >
+      {t.deleteEvent}
+    </Button>
+  </div>
+
+  <EventDetailCard event={selectedEvent} />
+</div>
       </div>
     ) : events.length > 0 ? (
       events.map((event) => (
-        <EventCard
-          key={event.id}
-          event={event}
-          isActive={selectedDate ? isSameDay(event.date, selectedDate) : false}
-          onClick={() => setSelectedDate(event.date)}
-        />
-      ))
+  <div key={event.id} className="relative">
+    <EventCard
+      event={event}
+      isActive={selectedDate ? isSameDay(event.date, selectedDate) : false}
+      onClick={() => setSelectedDate(event.date)}
+    />
+
+    <Button
+      type="button"
+      variant="destructive"
+      size="sm"
+      onClick={(e) => {
+        e.stopPropagation();
+        handleDeleteEvent(event.id);
+      }}
+      className="absolute right-3 top-3 rounded-full px-3 py-1 text-xs"
+    >
+      {t.delete}
+    </Button>
+  </div>
+))
     ) : (
       <Card className="border-volunteer-lavender/30">
         <CardContent className="p-6 text-center">
           <h3 className="font-heading text-xl font-semibold text-foreground">
-            No activities added yet
+{t.noActivities}
           </h3>
           <p className="mt-2 text-muted-foreground">
-            Click the pencil button above to add the first activity.
+            {t.clickPencil}
           </p>
         </CardContent>
       </Card>
@@ -462,9 +618,8 @@ function Index() {
       {/* Footer */}
       <footer className="border-t border-volunteer-lavender/20 py-8 text-center text-sm text-muted-foreground">
         <p>
-          Made with{" "}
-          <Heart className="inline h-3.5 w-3.5 text-volunteer-pink" /> by our
-          amazing volunteers
+          {t.footer}{" "}
+<Heart className="inline h-3.5 w-3.5 text-volunteer-pink" />
         </p>
       </footer>
     </div>
